@@ -63,3 +63,26 @@ async def test_mongo_bind_model(tmp_path):
     assert len(docs) == 1
     assert isinstance(docs[0], AuditEvent)
     assert docs[0].event_id == "evt-1"
+
+
+
+@pytest.mark.asyncio
+async def test_mongo_find_with_model_argument(tmp_path):
+    pydantic = pytest.importorskip("pydantic")
+    BaseModel = pydantic.BaseModel
+
+    class Profile(BaseModel):
+        id: str
+        name: str
+
+        class Config:
+            extra = "ignore"
+
+    setattr(Profile, "model_config", {"extra": "ignore"})
+
+    backend = LocalStorageBackend(str(tmp_path / "base"))
+    db = FakeMongoDB(backend, "db")
+    coll = await db.get_collection("profiles")
+    await coll.insert_one({"id": "p1", "name": "Alice"})
+    docs = await coll.find(model=Profile)
+    assert isinstance(docs[0], Profile)

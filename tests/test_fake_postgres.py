@@ -23,6 +23,7 @@ async def test_postgres_sqlmodel_roundtrip(tmp_path):
     SQLModel = sqlmodel.SQLModel
 
     class User(SQLModel, table=True):
+        __tablename__ = "users_roundtrip"
         id: int | None = Field(default=None, primary_key=True)
         name: str
 
@@ -55,4 +56,3 @@ async def test_postgres_bind_model_after_schema(tmp_path):
     typed_rows = await db.query("logs", as_model=True)
     assert all(isinstance(row, LogEntry) for row in typed_rows)
     assert {row.message for row in typed_rows} == {"boot", "ready"}
-

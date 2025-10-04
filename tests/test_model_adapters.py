@@ -70,3 +70,52 @@ def test_ensure_schema_fills_missing():
     row = ensure_schema({"id": 1}, {"id", "name"})
     assert row["id"] == 1
     assert row["name"] is None
+
+
+
+def test_infer_schema_unsupported():
+    class Plain:
+        pass
+    with pytest.raises(TypeError):
+        infer_schema_from_model(Plain)
+
+
+
+def test_adapter_to_dict_mapping():
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    class Base(DeclarativeBase):
+        pass
+
+    class Item(Base):
+        __tablename__ = "items_adapter"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str] = mapped_column()
+
+    _, adapter = infer_schema_from_model(Item)
+    data = adapter.to_dict({"id": 1, "name": "foo"})
+    assert data["name"] == "foo"
+
+
+
+def test_adapter_to_dict_mapping_proxy():
+    class MappingProxy:
+        def __init__(self, data):
+            self._mapping = data
+
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    class Base(DeclarativeBase):
+        pass
+
+    class Item(Base):
+        __tablename__ = "items_proxy"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str] = mapped_column()
+
+    _, adapter = infer_schema_from_model(Item)
+    proxy = MappingProxy({"id": 1, "name": "foo"})
+    data = adapter.to_dict(proxy)
+    assert data["id"] == 1
