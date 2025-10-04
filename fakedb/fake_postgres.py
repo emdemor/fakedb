@@ -50,8 +50,16 @@ import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from typing import Type
 
 from .storage_backends import StorageBackend
+
+try:
+    # Pydantic is optional; use when available
+    from pydantic import BaseModel, ValidationError  # type: ignore
+except ImportError:
+    BaseModel = None  # type: ignore
+    ValidationError = Exception  # type: ignore
 
 
 class FakePostgresDB:
@@ -70,6 +78,8 @@ class FakePostgresDB:
         self._meta_path = f"{self.db_name}/__METADATA__.json"
         self._metadata: Dict[str, Any] | None = None
         self._meta_lock_key = f"{self.db_name}__meta"
+        # Mapping of table name to Pydantic model class for validation (optional)
+        self._table_models: Dict[str, Type[BaseModel]] = {}
 
     async def _load_metadata(self) -> Dict[str, Any]:
         """Load or initialize the database metadata asynchronously."""
@@ -101,13 +111,48 @@ class FakePostgresDB:
         await self.backend.delete(self._meta_path)
         await self.backend.write_bytes(self._meta_path, data)
 
-    async def create_table(self, name: str, schema: Dict[str, str]) -> None:
+    async def create_table(
+        self,
+        name: str,
+        schema: Optional[Dict[str, str]] = None,
+        *,
+        model: Optional[Type[BaseModel]] = None,
+    ) -> None:
         """Create a new table with the given *schema*.
 
         :param name: Table name. A directory of this name will be created inside
             the database directory.
         :param schema: Mapping of column names to simple type descriptions.
+        :param model: Optional Pydantic BaseModel subclass used to define the
+            table schema and validate rows. If provided, the table schema will
+            be inferred from the model's fields.
         """
+        # Determine schema from model if provided
+        if model is not None:
+            if BaseModel is None:
+                raise ImportError(
+                    "pydantic must be installed to use 'model' parameter in create_table"
+                )
+            if not issubclass(model, BaseModel):
+                raise TypeError("model must be a subclass of pydantic.BaseModel")
+            if schema is not None:
+                raise ValueError("Specify either 'schema' or 'model', not both")
+            # Build a simple schema mapping field name -> type name
+            schema = {}
+            # Pydantic v2 uses `model_fields`; v1 uses `__fields__`. Attempt to
+            # access the newer API first, falling back to the legacy one.
+            field_map = getattr(model, "model_fields", None)
+            if field_map is None:
+                field_map = getattr(model, "__fields__", {})  # type: ignore
+            for fname, field in field_map.items():
+                # Determine Python type name; annotation holds the type
+                annotation = getattr(field, "annotation", None)
+                if annotation is None and hasattr(field, "type_"):
+                    annotation = getattr(field, "type_", None)
+                type_name = getattr(annotation, "__name__", str(annotation))
+                schema[fname] = type_name
+        if schema is None:
+            raise ValueError("Either 'schema' or 'model' must be provided")
         meta = await self._load_metadata()
         if name in meta["tables"]:
             raise ValueError(f"table '{name}' already exists")
@@ -121,7 +166,14 @@ class FakePostgresDB:
             table_dir = f"{self.db_name}/{name}"
             await self.backend.makedirs(table_dir)
             # Write table metadata
-            table_meta = {"schema": schema}
+            table_meta: Dict[str, Any] = {"schema": schema}
+            # Record model usage
+            if model is not None:
+                # Save fully qualified model name for informational purposes
+                table_meta["pydantic_model"] = (
+                    f"{model.__module__}.{model.__qualname__}"
+                )
+                self._table_models[name] = model  # store reference in memory
             meta["tables"][name] = table_meta
             await self._save_metadata()
             # also save schema inside table folder for quick access
@@ -142,6 +194,44 @@ class FakePostgresDB:
         meta = await self._load_metadata()
         if table not in meta["tables"]:
             raise ValueError(f"table '{table}' does not exist")
+
+        # Validate that all rows conform to the table's schema. We only allow
+        # columns defined in the schema; extra keys will raise an error. Missing
+        # keys are accepted and will be implicitly stored as nulls. This check
+        # helps prevent silent insertion of fields that were not declared when
+        # creating the table.
+        schema_keys = set(meta["tables"][table]["schema"].keys())
+        model_cls: Optional[Type[BaseModel]] = self._table_models.get(table)
+        if model_cls is not None and BaseModel is not None:
+            # Validate and coerce rows using the Pydantic model
+            validated_rows: List[Dict[str, Any]] = []
+            for row in rows:
+                row_keys = set(row.keys())
+                extra = row_keys - schema_keys
+                if extra:
+                    raise ValueError(
+                        f"row contains unknown columns {extra}; allowed columns are {schema_keys}"
+                    )
+                try:
+                    obj = model_cls.parse_obj(row)
+                except ValidationError as e:
+                    raise ValueError(f"Row failed validation: {e}")
+                validated_rows.append(obj.dict())
+            # Replace rows with validated rows
+            rows = validated_rows
+        else:
+            # Manual validation when no Pydantic model is used
+            for row in rows:
+                row_keys = set(row.keys())
+                extra = row_keys - schema_keys
+                if extra:
+                    raise ValueError(
+                        f"row contains unknown columns {extra}; allowed columns are {schema_keys}"
+                    )
+                # Fill in missing columns with None to preserve schema consistency
+                missing = schema_keys - row_keys
+                for key in missing:
+                    row[key] = None
         # Acquire write lock on the table
         lock_key = f"{self.db_name}/{table}__write"
         async with self.backend.acquire_lock(lock_key):
