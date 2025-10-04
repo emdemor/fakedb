@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fakedb"
+version = "0.1.0"
+description = "Asynchronous fake PostgreSQL and MongoDB interfaces backed by local or remote storage."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "Fake GCS DB Maintainers"}
+]
+keywords = ["gcs", "postgresql", "mongodb", "asyncio", "testing"]
+dependencies = []
+
+[project.optional-dependencies]
+extras = [
+  "pydantic>=1.10",
+  "sqlmodel>=0.0.8",
+  "sqlalchemy>=1.4",
+]
+cloud = [
+  "google-cloud-storage>=2.0",
+]
+dev = [
+  "pytest>=7",
+  "pytest-asyncio>=0.21",
+  "pytest-cov>=4",
+]
+
+[project.urls]
+Home = "https://github.com/eduardo/fakedb"
+Source = "https://github.com/eduardo/fakedb"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "tests.*"]
