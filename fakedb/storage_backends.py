@@ -1,5 +1,5 @@
 """
-Storage backend abstractions for fake_gcs_db.
+Storage backend abstractions for fakedb.
 
 The :class:`StorageBackend` interface defines the asynchronous primitives used by
 the higher‑level database abstractions. Two concrete implementations are

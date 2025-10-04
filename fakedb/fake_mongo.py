@@ -1,9 +1,9 @@
 """
-fake_gcs_db.fake_mongo
+fakedb.fake_mongo
 ======================
 
 Camada mínima e assíncrona com API estilo MongoDB sobre um
-:class:`~fake_gcs_db.storage_backends.StorageBackend`.
+:class:`~fakedb.storage_backends.StorageBackend`.
 
 - Coleções são diretórios; cada documento é um JSON nomeado por ``_id``.
 - Um arquivo de metadados controla coleções e operações em andamento (para

@@ -54,7 +54,9 @@ async def postgres_plain_dict(root: Path) -> None:
         backend = make_backend(root, "pg_plain")
         db = FakePostgresDB(backend, "pg_demo")
         await db.create_table("events", {"id": "int", "name": "str"})
-        await db.insert("events", [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}])
+        await db.insert(
+            "events", [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
+        )
         rows = await db.query("events")
         print("Read rows:", rows)
 
@@ -64,6 +66,7 @@ async def postgres_sqlmodel(root: Path) -> None:
         print("Skipping Postgres SQLModel test (sqlmodel not installed).")
         return
     with OutputSection("Postgres: SQLModel integration"):
+
         class User(SQLModel, table=True):
             id: Optional[int] = Field(default=None, primary_key=True)
             name: str
@@ -89,6 +92,7 @@ async def postgres_sqlalchemy(root: Path) -> None:
         print("Skipping Postgres SQLAlchemy test (sqlalchemy not installed).")
         return
     with OutputSection("Postgres: SQLAlchemy ORM integration"):
+
         class Base(DeclarativeBase):
             pass
 
@@ -114,6 +118,7 @@ async def postgres_bind_after_schema(root: Path) -> None:
         print("Skipping Postgres bind_table_model test (pydantic not installed).")
         return
     with OutputSection("Postgres: binding model after schema"):
+
         class LogEntry(BaseModel):
             id: int
             message: str
@@ -122,7 +127,9 @@ async def postgres_bind_after_schema(root: Path) -> None:
         db = FakePostgresDB(backend, "pg_bind")
         await db.create_table("logs", {"id": "int", "message": "str"})
         await db.bind_table_model("logs", LogEntry)
-        await db.insert("logs", [LogEntry(id=1, message="boot"), {"id": 2, "message": "ready"}])
+        await db.insert(
+            "logs", [LogEntry(id=1, message="boot"), {"id": 2, "message": "ready"}]
+        )
         typed_rows = await db.query("logs", as_model=True)
         print("Log entries:", typed_rows)
         assert all(isinstance(row, LogEntry) for row in typed_rows)
@@ -145,6 +152,7 @@ async def mongo_typed(root: Path) -> None:
         print("Skipping Mongo typed test (pydantic not installed).")
         return
     with OutputSection("Mongo: model binding and typed results"):
+
         class Profile(BaseModel):
             id: str
             name: str
@@ -165,6 +173,7 @@ async def mongo_rebind(root: Path) -> None:
         print("Skipping Mongo rebind test (pydantic not installed).")
         return
     with OutputSection("Mongo: bind model after creation"):
+
         class AuditEvent(BaseModel):
             event_id: str
             payload: dict[str, Any]
@@ -180,7 +189,7 @@ async def mongo_rebind(root: Path) -> None:
 
 
 async def main() -> None:
-    temp_dir = Path(tempfile.mkdtemp(prefix="fake_gcs_db_demo_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="fakedb_demo_"))
     print("Scratch workspace:", temp_dir)
     try:
         await postgres_plain_dict(temp_dir)
@@ -196,4 +205,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

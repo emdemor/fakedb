@@ -1,9 +1,9 @@
 """
-fake_gcs_db.fake_postgres
+fakedb.fake_postgres
 =========================
 
 Implementa uma interface assíncrona estilo PostgreSQL sobre um
-:class:`~fake_gcs_db.storage_backends.StorageBackend`.
+:class:`~fakedb.storage_backends.StorageBackend`.
 
 - Tabelas são diretórios; cada insert cria um novo arquivo JSON Lines (append-only).
 - Esquemas podem ser inferidos de modelos (Pydantic/SQLModel/SQLAlchemy).

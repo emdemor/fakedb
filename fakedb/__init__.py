@@ -1,5 +1,5 @@
 """
-fake_gcs_db
+fakedb
 ================
 
 This package provides a simple, asynchronous abstraction layer that mimics
@@ -34,7 +34,7 @@ the overhead of provisioning a real database.
 
 Usage example::
 
-    from fake_gcs_db import FakePostgresDB, LocalStorageBackend
+    from fakedb import FakePostgresDB, LocalStorageBackend
 
     backend = LocalStorageBackend("/tmp/analytics_sandbox")
     db = FakePostgresDB(backend, "mydb")
