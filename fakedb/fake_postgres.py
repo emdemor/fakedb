@@ -10,6 +10,12 @@ directories, with each insert producing a new JSON Lines (``.jsonl``) file
 containing the inserted rows. This append‑only approach avoids concurrent
 modification of the same file and thus plays well with distributed locks.
 
+The database can infer schemas directly from Pydantic models, SQLModel
+declarations, or SQLAlchemy ORM classes. When a table is bound to one of
+those models, inserts accept rich objects and queries can materialize rows
+back into typed instances, making it easier to replace a real PostgreSQL
+client in local tests.
+
 Although Parquet would offer better performance and smaller file sizes, it
 requires additional dependencies. JSON Lines is used here for simplicity.
 Parquet is a columnar format that stores data more compactly (around a
@@ -49,9 +55,13 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
-from typing import Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
+from .model_adapters import (
+    ModelAdapter,
+    ensure_schema,
+    infer_schema_from_model,
+)
 from .storage_backends import StorageBackend
 
 try:
@@ -78,8 +88,8 @@ class FakePostgresDB:
         self._meta_path = f"{self.db_name}/__METADATA__.json"
         self._metadata: Dict[str, Any] | None = None
         self._meta_lock_key = f"{self.db_name}__meta"
-        # Mapping of table name to Pydantic model class for validation (optional)
-        self._table_models: Dict[str, Type[BaseModel]] = {}
+        # Optional adapters to coerce rows to/from structured models
+        self._table_models: Dict[str, ModelAdapter] = {}
 
     async def _load_metadata(self) -> Dict[str, Any]:
         """Load or initialize the database metadata asynchronously."""
@@ -116,41 +126,23 @@ class FakePostgresDB:
         name: str,
         schema: Optional[Dict[str, str]] = None,
         *,
-        model: Optional[Type[BaseModel]] = None,
+        model: Optional[Type[Any]] = None,
     ) -> None:
         """Create a new table with the given *schema*.
 
         :param name: Table name. A directory of this name will be created inside
             the database directory.
         :param schema: Mapping of column names to simple type descriptions.
-        :param model: Optional Pydantic BaseModel subclass used to define the
+        :param model: Optional structured model (Pydantic ``BaseModel``,
+            ``SQLModel`` or SQLAlchemy declarative class) used to define the
             table schema and validate rows. If provided, the table schema will
-            be inferred from the model's fields.
+            be inferred automatically.
         """
-        # Determine schema from model if provided
+        adapter: Optional[ModelAdapter] = None
         if model is not None:
-            if BaseModel is None:
-                raise ImportError(
-                    "pydantic must be installed to use 'model' parameter in create_table"
-                )
-            if not issubclass(model, BaseModel):
-                raise TypeError("model must be a subclass of pydantic.BaseModel")
             if schema is not None:
                 raise ValueError("Specify either 'schema' or 'model', not both")
-            # Build a simple schema mapping field name -> type name
-            schema = {}
-            # Pydantic v2 uses `model_fields`; v1 uses `__fields__`. Attempt to
-            # access the newer API first, falling back to the legacy one.
-            field_map = getattr(model, "model_fields", None)
-            if field_map is None:
-                field_map = getattr(model, "__fields__", {})  # type: ignore
-            for fname, field in field_map.items():
-                # Determine Python type name; annotation holds the type
-                annotation = getattr(field, "annotation", None)
-                if annotation is None and hasattr(field, "type_"):
-                    annotation = getattr(field, "type_", None)
-                type_name = getattr(annotation, "__name__", str(annotation))
-                schema[fname] = type_name
+            schema, adapter = infer_schema_from_model(model)
         if schema is None:
             raise ValueError("Either 'schema' or 'model' must be provided")
         meta = await self._load_metadata()
@@ -168,12 +160,12 @@ class FakePostgresDB:
             # Write table metadata
             table_meta: Dict[str, Any] = {"schema": schema}
             # Record model usage
-            if model is not None:
-                # Save fully qualified model name for informational purposes
-                table_meta["pydantic_model"] = (
-                    f"{model.__module__}.{model.__qualname__}"
-                )
-                self._table_models[name] = model  # store reference in memory
+            if adapter is not None and model is not None:
+                table_meta["model_binding"] = {
+                    "kind": adapter.kind,
+                    "class": f"{model.__module__}.{model.__qualname__}",
+                }
+                self._table_models[name] = adapter  # store reference in memory
             meta["tables"][name] = table_meta
             await self._save_metadata()
             # also save schema inside table folder for quick access
@@ -181,6 +173,15 @@ class FakePostgresDB:
             await self.backend.write_bytes(
                 schema_path, json.dumps(schema).encode("utf-8")
             )
+
+    async def bind_table_model(self, name: str, model: Type[Any]) -> None:
+        """Register *model* for table *name* so queries can return typed rows."""
+
+        meta = await self._load_metadata()
+        if name not in meta.get("tables", {}):
+            raise ValueError(f"table '{name}' does not exist")
+        _, adapter = infer_schema_from_model(model)
+        self._table_models[name] = adapter
 
     async def insert(self, table: str, rows: List[Dict[str, Any]]) -> None:
         """Insert one or more rows into *table*.
@@ -201,37 +202,31 @@ class FakePostgresDB:
         # helps prevent silent insertion of fields that were not declared when
         # creating the table.
         schema_keys = set(meta["tables"][table]["schema"].keys())
-        model_cls: Optional[Type[BaseModel]] = self._table_models.get(table)
-        if model_cls is not None and BaseModel is not None:
-            # Validate and coerce rows using the Pydantic model
-            validated_rows: List[Dict[str, Any]] = []
-            for row in rows:
-                row_keys = set(row.keys())
-                extra = row_keys - schema_keys
-                if extra:
-                    raise ValueError(
-                        f"row contains unknown columns {extra}; allowed columns are {schema_keys}"
-                    )
+        adapter = self._table_models.get(table)
+        normalized_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            if adapter is not None:
                 try:
-                    obj = model_cls.parse_obj(row)
-                except ValidationError as e:
-                    raise ValueError(f"Row failed validation: {e}")
-                validated_rows.append(obj.dict())
-            # Replace rows with validated rows
-            rows = validated_rows
-        else:
-            # Manual validation when no Pydantic model is used
-            for row in rows:
-                row_keys = set(row.keys())
-                extra = row_keys - schema_keys
-                if extra:
-                    raise ValueError(
-                        f"row contains unknown columns {extra}; allowed columns are {schema_keys}"
+                    raw_row = adapter.to_dict(row)
+                except ValidationError as exc:
+                    raise ValueError(f"Row failed validation: {exc}") from exc
+            else:
+                if isinstance(row, dict):
+                    raw_row = dict(row)
+                elif hasattr(row, "_mapping"):
+                    raw_row = dict(row._mapping)
+                elif hasattr(row, "__dict__"):
+                    raw_row = {
+                        key: value
+                        for key, value in row.__dict__.items()
+                        if not key.startswith("_")
+                    }
+                else:
+                    raise TypeError(
+                        "row must be a mapping or a structured model bound to the table"
                     )
-                # Fill in missing columns with None to preserve schema consistency
-                missing = schema_keys - row_keys
-                for key in missing:
-                    row[key] = None
+            normalized_rows.append(ensure_schema(raw_row, schema_keys))
+        rows = normalized_rows
         # Acquire write lock on the table
         lock_key = f"{self.db_name}/{table}__write"
         async with self.backend.acquire_lock(lock_key):
@@ -262,7 +257,10 @@ class FakePostgresDB:
         self,
         table: str,
         filters: Optional[Callable[[Dict[str, Any]], bool]] = None,
-    ) -> List[Dict[str, Any]]:
+        *,
+        model: Optional[Type[Any]] = None,
+        as_model: bool = False,
+    ) -> List[Any]:
         """Retrieve all rows from *table* optionally filtered by *filters*.
 
         If any write operations are in progress (as recorded in the metadata
@@ -303,7 +301,21 @@ class FakePostgresDB:
                     continue
                 if filters is None or filters(obj):
                     results.append(obj)
-        return results
+        adapter: Optional[ModelAdapter] = None
+        if model is not None:
+            _, adapter = infer_schema_from_model(model)
+            self._table_models[table] = adapter
+        elif as_model:
+            adapter = self._table_models.get(table)
+        if adapter is None:
+            return results
+        typed_results: List[Any] = []
+        for row in results:
+            try:
+                typed_results.append(adapter.from_dict(row))
+            except ValidationError as exc:
+                raise ValueError(f"Row failed validation: {exc}") from exc
+        return typed_results
 
     # Convenience method to reflect SQLAlchemy style execute
     async def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
