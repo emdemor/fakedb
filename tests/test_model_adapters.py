@@ -119,3 +119,36 @@ def test_adapter_to_dict_mapping_proxy():
     proxy = MappingProxy({"id": 1, "name": "foo"})
     data = adapter.to_dict(proxy)
     assert data["id"] == 1
+
+
+
+def test_pydantic_model_dump_type_error():
+    class Dummy:
+        pass
+    with pytest.raises(TypeError):
+        pydantic_model_dump(Dummy())
+
+
+
+def test_pydantic_model_validate_type_error():
+    class Dummy:
+        pass
+    with pytest.raises(TypeError):
+        pydantic_model_validate(Dummy, {})
+
+
+
+def test_model_adapter_none():
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    class Base(DeclarativeBase):
+        pass
+
+    class Item(Base):
+        __tablename__ = "items_none"
+        id: Mapped[int] = mapped_column(primary_key=True)
+
+    _, adapter = infer_schema_from_model(Item)
+    with pytest.raises(ValueError):
+        adapter.to_dict(None)

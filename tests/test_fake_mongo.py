@@ -86,3 +86,40 @@ async def test_mongo_find_with_model_argument(tmp_path):
     await coll.insert_one({"id": "p1", "name": "Alice"})
     docs = await coll.find(model=Profile)
     assert isinstance(docs[0], Profile)
+
+
+
+@pytest.mark.asyncio
+async def test_mongo_find_invalid_json(tmp_path):
+    backend_path = tmp_path / "base"
+    backend = LocalStorageBackend(str(backend_path))
+    db = FakeMongoDB(backend, "db")
+    coll = await db.get_collection("docs")
+    coll_dir = backend_path / "db" / "docs"
+    coll_dir.mkdir(parents=True, exist_ok=True)
+    bad_file = coll_dir / "bad.json"
+    bad_file.write_text("not-json", encoding="utf-8")
+    docs = await coll.find()
+    assert docs == []
+
+
+
+@pytest.mark.asyncio
+async def test_mongo_find_one_as_model(tmp_path):
+    pydantic = pytest.importorskip("pydantic")
+    BaseModel = pydantic.BaseModel
+
+    class Profile(BaseModel):
+        id: str
+
+        class Config:
+            extra = "ignore"
+
+    setattr(Profile, "model_config", {"extra": "ignore"})
+
+    backend = LocalStorageBackend(str(tmp_path / "base"))
+    db = FakeMongoDB(backend, "db")
+    coll = await db.get_collection("profiles", model=Profile)
+    await coll.insert_one({"id": "p1"})
+    doc = await coll.find_one(as_model=True)
+    assert isinstance(doc, Profile)
