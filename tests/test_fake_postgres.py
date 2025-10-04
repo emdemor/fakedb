@@ -31,6 +31,7 @@ async def test_postgres_sqlmodel_roundtrip(tmp_path):
     db = FakePostgresDB(backend, "sqlmodel_db")
     await db.create_table("users", model=User)
     await db.insert("users", [User(name="Alice"), {"name": "Bob"}])
+    await db.bind_table_model("users", User)
     typed_rows = await db.query("users", as_model=True)
     assert all(isinstance(row, User) for row in typed_rows)
     assert {row.name for row in typed_rows} == {"Alice", "Bob"}
