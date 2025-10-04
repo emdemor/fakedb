@@ -64,9 +64,13 @@ async def query_worker(
     *,
     n_queries: int = 5,
     model_bound: bool = False,
+    model_cls: Optional[type] = None,
 ) -> None:
     for _ in range(n_queries):
-        rows = await db.query(table, as_model=model_bound)
+        if model_cls is not None:
+            rows = await db.query(table, model=model_cls)
+        else:
+            rows = await db.query(table, as_model=model_bound)
         print(f"Querier {worker_id} read {len(rows)} rows")
         await asyncio.sleep(0.02)
 
@@ -145,6 +149,7 @@ async def stress_test_postgres() -> None:
                     w,
                     n_queries=5,
                     model_bound=model is not None,
+                    model_cls=model,
                 )
             )
         )
